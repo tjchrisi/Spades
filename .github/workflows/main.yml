@@ -1,5 +1,5 @@
 
-name: Polaris Scan
+name: Polaris (SAST + SCA)
 
 on:
   push:
@@ -8,26 +8,64 @@ on:
     branches: [ main, master, develop, stage, release ]
   workflow_dispatch:
 
+# Required for SARIF uploads to GitHub Advanced Security
 permissions:
   contents: read
   security-events: write
+  actions: read
 
 jobs:
   polaris-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - name: Checkout Source
+      - name: Checkout source
         uses: actions/checkout@v3
 
-      - name: Polaris Scan
+      # (Optional) Setup language toolchains here if your project needs a build:
+      # - name: Setup Java
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: temurin
+      #     java-version: '17'
+      # - name: Build (example)
+      #   run: mvn -B -DskipTests package
+
+      # --- Create a dedicated folder for SARIF outputs ---
+      - name: Prepare SARIF folder
+        run: mkdir -p "${{ github.workspace }}/sarif"
+
+      - name: Polaris Scan (Black Duck Security Scan)
         uses: blackduck-inc/black-duck-security-scan@v2.0.0
         with:
+          # --- Required ---
           polaris_server_url: ${{ vars.POLARIS_SERVERURL }}
           polaris_access_token: ${{ secrets.POLARIS_ACCESSTOKEN }}
           polaris_assessment_types: "SCA,SAST"
+
+          # --- Optional but recommended ---
           polaris_application_name: "TestTJ"
           polaris_project_name: ${{ github.event.repository.name }}
+
+          # --- PR comments (optional) ---
           polaris_prComment_enabled: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # --- SARIF generation (Polaris) ---
+          # Force SARIF to a path we control (avoid the .bridge default)
           polaris_reports_sarif_create: true
+          polaris_reports_sarif_file_path: "${{ github.workspace }}/sarif/polaris-findings.sarif"
+
+          # Upload to GitHub Security tab (requires permissions above)
           polaris_upload_sarif_report: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Diagnostics: prove SARIF exists and show where it is ---
+      - name: List SARIF files
+        if: always()
+        run: |
+          echo "Workspace: $GITHUB_WORKSPACE"
+          ls -la "${{ github.workspace }}/sarif" || true
+          echo "Search for SARIF in workspace:"
+          find "${{ github.workspace }}" -name "*.sarif" -maxdepth 5 -print || true
