@@ -1,5 +1,6 @@
 
-name: polaris
+name: Polaris (SAST + SCA)
+
 on:
   push:
     branches: [ main, master, develop, stage, release ]
@@ -7,21 +8,87 @@ on:
     branches: [ main, master, develop, stage, release ]
   workflow_dispatch:
 
+# Required for SARIF upload to GitHub Security tab
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: polaris-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   polaris-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # Adjust environment if needed
+    env:
+      # Optional: useful when your build uses specific environment variables
+      NODE_OPTIONS: --max_old_space_size=4096
+
     steps:
-      - name: Checkout Source
+      - name: Checkout source
         uses: actions/checkout@v3
 
-      # If your build requires specific tools (Java, Node, etc.), add setup steps here.
-      # - name: Setup Java
+      # ------------------------------
+      # OPTIONAL LANGUAGE SETUP STEPS
+      # Enable only the ones your project needs
+      # ------------------------------
+
+      # - name: Setup Java (Temurin JDK 17)
       #   uses: actions/setup-java@v4
       #   with:
       #     distribution: 'temurin'
       #     java-version: '17'
+      # - name: Cache Maven
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ~/.m2/repository
+      #     key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-maven-
 
-      - name: Polaris Scan
+      # - name: Setup Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
+      # - name: Cache npm
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ~/.npm
+      #     key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+      #     restore-keys: |
+      #       ${{ runner.os }}-npm-
+      # - name: Install Node dependencies
+      #   run: npm ci
+
+      # - name: Setup Go
+      #   uses: actions/setup-go@v5
+      #   with:
+      #     go-version: '1.21'
+
+      # - name: Setup .NET
+      #   uses: actions/setup-dotnet@v4
+      #   with:
+      #     dotnet-version: '8.0.x'
+
+      # ------------------------------
+      # OPTIONAL: Your project build (needed for compiled languages)
+      # Uncomment & tailor for Java/C/C++/.NET builds
+      # ------------------------------
+      # - name: Build (Java/Maven example)
+      #   run: mvn -B -DskipTests package
+
+      # - name: Build (Node example)
+      #   run: |
+      #     npm run build || echo "No build step needed"
+
+      # ------------------------------
+      # POLARIS SCAN (SAST + SCA) + SARIF
+      # ------------------------------
+      - name: Polaris Scan (Black Duck Security Scan)
         uses: blackduck-inc/black-duck-security-scan@v2.0.0
         with:
           # --- Required ---
@@ -41,3 +108,30 @@ jobs:
           polaris_reports_sarif_create: true
           polaris_upload_sarif_report: true
 
+          # --- Additional useful options (uncomment as needed) ---
+          # polaris_ci_type: "github"             # Explicit CI type
+          # polaris_branch_name: ${{ github.ref_name }}
+          # polaris_commit_sha: ${{ github.sha }}
+          # polaris_detect_docker: false           # If the runner shouldn't use Docker
+          # polaris_sast_autobuild_enabled: true   # Attempt auto-build for SAST
+
+      # ------------------------------
+      # DIAGNOSTICS (optional)
+      # ------------------------------
+      - name: Show workspace & SARIF hints
+        if: always()
+        run: |
+          echo "Runner workspace: $GITHUB_WORKSPACE"
+          echo "Listing workspace files:"
+          ls -la
+          echo "Searching for SARIF files (the Action uploads internally; this is just a check):"
+          find . -name "*.sarif" -maxdepth 4 -print || true
+
+      # ------------------------------
+      # Optional: Upload SARIF via native action if you generate custom SARIF elsewhere
+      # Not needed for the Black Duck action above, which already uploads the SARIF.
+      # ------------------------------
+      # - name: Upload SARIF to GitHub (if you have your own SARIF files)
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: path/to/your.sarif
