@@ -23,16 +23,17 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v3
 
-      # (Optional) Setup language toolchains here if your project needs a build:
+      # OPTIONAL: Setup language toolchains if your project needs a build
+      # Uncomment and customize based on your stack:
       # - name: Setup Java
       #   uses: actions/setup-java@v4
       #   with:
       #     distribution: temurin
       #     java-version: '17'
-      # - name: Build (example)
+      # - name: Build (Java example)
       #   run: mvn -B -DskipTests package
 
-      # --- Create a dedicated folder for SARIF outputs ---
+      # Create a dedicated folder for SARIF outputs
       - name: Prepare SARIF folder
         run: mkdir -p "${{ github.workspace }}/sarif"
 
@@ -48,20 +49,18 @@ jobs:
           polaris_application_name: "TestTJ"
           polaris_project_name: ${{ github.event.repository.name }}
 
-          # --- PR comments (optional) ---
+          # Enable PR comments
           polaris_prComment_enabled: true
+
+          # GitHub token (used for PR comments AND SARIF upload)
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-          # --- SARIF generation (Polaris) ---
-          # Force SARIF to a path we control (avoid the .bridge default)
+          # SARIF generation and upload
           polaris_reports_sarif_create: true
           polaris_reports_sarif_file_path: "${{ github.workspace }}/sarif/polaris-findings.sarif"
-
-          # Upload to GitHub Security tab (requires permissions above)
           polaris_upload_sarif_report: true
-          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Diagnostics: prove SARIF exists and show where it is ---
+      # Diagnostics: confirm SARIF exists
       - name: List SARIF files
         if: always()
         run: |
