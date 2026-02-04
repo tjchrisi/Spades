@@ -17,8 +17,9 @@ env:
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
-  # ---- Windows path where tools are installed ----
-  # Example: C:\coverity\bin
+  # ---- Windows path where tools will be available on the runner ----
+  # If you install Coverity during the job, point this to that location.
+  # Example if you unzip to RUNNER_TEMP: C:\Users\runneradmin\AppData\Local\Temp\coverity\bin
   COVERITY_BIN_DIR:      ${{ vars.COVERITY_BIN_DIR }}
 
   # ---- Credentials ----
@@ -29,26 +30,33 @@ env:
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-
-    # ── Choose ONE of the following ──────────────────────────────────────────
-    # For GitHub-hosted Windows runner (nothing special installed):
-    # runs-on: windows-latest
-
-    # For a self-hosted Windows runner where Coverity is preinstalled:
-    runs-on: [self-hosted, windows]
-    # If you added a custom label to the runner (e.g., "coverity"):
-    # runs-on: [self-hosted, windows, coverity]
-    # ─────────────────────────────────────────────────────────────────────────
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # OPTIONAL: Install Coverity tools on the GitHub-hosted runner.
+      # Replace this placeholder with the actual download/installation method available to you
+      # (internal artifact feed, private storage, or prepackaged zip).
+      # Then set COVERITY_BIN_DIR to the extracted bin path (or echo it to PATH).
+      # Example skeleton:
+      # - name: Install Coverity CLI
+      #   shell: pwsh
+      #   run: |
+      #     $dest = Join-Path $env:RUNNER_TEMP "coverity"
+      #     New-Item -ItemType Directory -Path $dest -Force | Out-Null
+      #     # Example: Invoke-WebRequest to your internal URL, then Expand-Archive
+      #     # Invoke-WebRequest -Uri "https://your-internal-url/coverity.zip" -OutFile "$dest\cov.zip"
+      #     # Expand-Archive -Path "$dest\cov.zip" -DestinationPath $dest -Force
+      #     # Set COVERITY_BIN_DIR for this job if not using repo-level variable:
+      #     # echo "$dest\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Add Coverity tools to PATH (Windows)
         shell: pwsh
         run: |
           if (-not "$env:COVERITY_BIN_DIR") {
-            Write-Error "COVERITY_BIN_DIR not set. Set it in GitHub → Settings → Secrets and variables → Actions → Variables."
+            Write-Error "COVERITY_BIN_DIR not set. Set it (e.g., to the path where you installed/unzipped Coverity) or add an install step."
           }
           echo "$env:COVERITY_BIN_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Write-Host "Checking tool availability..."
@@ -57,7 +65,7 @@ jobs:
             if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { $missing += $cmd }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "Missing Coverity tools: $($missing -join ', '). Ensure COVERITY_BIN_DIR is correct and tools are installed on this runner."
+            Write-Error "Missing Coverity tools: $($missing -join ', '). Ensure COVERITY_BIN_DIR is correct or install Coverity in a prior step."
           }
 
       - name: Prepare cov-int directory
