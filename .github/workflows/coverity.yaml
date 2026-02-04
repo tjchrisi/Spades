@@ -1,4 +1,4 @@
-name: Coverity Connect Scan
+name: Coverity Connect Scan (Windows)
 
 on:
   push:
@@ -12,112 +12,120 @@ permissions:
   pull-requests: write
 
 env:
-  # ==== Non-secret, set as Actions Variables (Settings → Secrets and variables → Actions → Variables) ====
-  COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}   # e.g. https://coverity.example.com
-  COVERITY_STREAM: ${{ vars.COVERITY_STREAM }}             # e.g. my-repo-main
-  COVERITY_PROJECT: ${{ vars.COVERITY_PROJECT }}           # optional
-  COVERITY_BIN_DIR: ${{ vars.COVERITY_BIN_DIR }}           # e.g. /opt/coverity/bin (optional)
+  # ---- Your Coverity Connect server ----
+  COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}
+  COVERITY_STREAM: ${{ vars.COVERITY_STREAM }}
+  COVERITY_PROJECT: ${{ vars.COVERITY_PROJECT }}
 
-  # ==== Secrets (choose ONE method), set under Actions → Secrets ====
-  COVERITY_USER: ${{ secrets.COVERITY_USER }}              # Option A: user
-  COVERITY_PASSWORD: ${{ secrets.COVERITY_PASSWORD }}      # Option A: password
-  COVERITY_AUTH_TOKEN: ${{ secrets.COVERITY_AUTH_TOKEN }}  # Option B: token
+  # ---- Windows path where tools are installed ----
+  COVERITY_BIN_DIR: ${{ vars.COVERITY_BIN_DIR }} # Example: C:\coverity\bin
+
+  # ---- Credentials ----
+  COVERITY_USER: ${{ secrets.COVERITY_USER }}
+  COVERITY_PASSWORD: ${{ secrets.COVERITY_PASSWORD }}
+  COVERITY_AUTH_TOKEN: ${{ secrets.COVERITY_AUTH_TOKEN }}
 
 jobs:
-  coverity-connect:
-    name: Coverity Connect
-    runs-on: ubuntu-latest
+  coverity:
+    name: Coverity Connect Scan (Windows)
+    runs-on: self-hosted
+    # optional tag if your runner has windows label:
+    # runs-on: [self-hosted, windows]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure Coverity tools on PATH
-        shell: bash
+      - name: Add Coverity tools to PATH (Windows)
+        shell: pwsh
         run: |
-          set -euo pipefail
-          if [ -n "${COVERITY_BIN_DIR:-}" ]; then
-            echo "${COVERITY_BIN_DIR}" >> "$GITHUB_PATH"
-          fi
-          command -v cov-build || echo "cov-build not found"
-          command -v cov-analyze || echo "cov-analyze not found"
-          command -v cov-commit-defects || echo "cov-commit-defects not found"
+          if (-not "$env:COVERITY_BIN_DIR") {
+            Write-Host "ERROR: COVERITY_BIN_DIR not set. Set it in GitHub → Variables."
+            exit 1
+          }
 
-      - name: Install prerequisites
+          Write-Host "Adding Coverity bin path: $env:COVERITY_BIN_DIR"
+          echo "$env:COVERITY_BIN_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "Checking tool availability..."
+          Get-Command cov-build -ErrorAction SilentlyContinue
+          Get-Command cov-analyze -ErrorAction SilentlyContinue
+          Get-Command cov-commit-defects -ErrorAction SilentlyContinue
+
+      - name: Prepare cov-int directory
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential
+          if (Test-Path "cov-int") { Remove-Item -Recurse -Force cov-int }
+          New-Item -ItemType Directory -Path cov-int
 
-      - name: Prepare capture directory
+      # =====================================================================
+      # BUILD SECTION — Choose ONE based on your project type
+      # =====================================================================
+
+      # ---- Example: .NET / C# ----
+      - name: Build (.NET example) through cov-build
+        shell: pwsh
         run: |
-          rm -rf cov-int
-          mkdir -p cov-int
+          cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
-      # ===== Choose ONE build. Example: Make (C/C++) =====
-      - name: Build with cov-build (Make example)
-        run: |
-          cov-build --dir cov-int --fs-capture-search . -- make -j"$(nproc)"
-
-      # ===== If Java/.NET, replace the step above with one of these examples =====
-      # - name: Setup Java
-      #   uses: actions/setup-java@v4
-      #   with:
-      #     distribution: temurin
-      #     java-version: "17"
-      # - name: Build (Maven) via cov-build
+      # ---- Example: Java / Maven ----
+      # - name: Build (Maven) through cov-build
+      #   shell: pwsh
       #   run: |
       #     cov-build --dir cov-int --fs-capture-search . -- mvn -B -DskipTests clean package
-      #
-      # - name: Setup .NET
-      #   uses: actions/setup-dotnet@v4
-      #   with:
-      #     dotnet-version: "8.0.x"
-      # - name: Build (.NET) via cov-build
-      #   run: |
-      #     cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
-      - name: Analyze
+      # ---- Example: C/C++ (MSBuild) ----
+      # - name: Build (MSBuild C/C++) through cov-build
+      #   shell: pwsh
+      #   run: |
+      #     cov-build --dir cov-int --fs-capture-search . -- msbuild.exe MySolution.sln /p:Configuration=Release
+
+      # =====================================================================
+      # ANALYZE
+      # =====================================================================
+      - name: Cov-Anaylze
+        shell: pwsh
         run: |
           cov-analyze --dir cov-int --all --webapp-security
 
-      # === Commit with username/password (only runs if both are set) ===
-      - name: Commit defects (user/password)
+      # =====================================================================
+      # COMMIT DEFECTS — USER/PASS
+      # =====================================================================
+      - name: Commit defects (username/password)
         if: env.COVERITY_USER != '' && env.COVERITY_PASSWORD != ''
+        shell: pwsh
         run: |
-          ARGS=""
-          if [ -n "${COVERITY_PROJECT:-}" ]; then
-            ARGS="--scm-project-name ${COVERITY_PROJECT}"
-          fi
-          cov-commit-defects \
-            --dir cov-int \
-            --url "${COVERITY_CONNECT_URL}" \
-            --stream "${COVERITY_STREAM}" \
-            --username "${COVERITY_USER}" \
-            --password "${COVERITY_PASSWORD}" \
-            ${ARGS}
+          $args = ""
+          if ("$env:COVERITY_PROJECT" -ne "") {
+            $args = "--scm-project-name $env:COVERITY_PROJECT"
+          }
 
-      # === Commit with token (only runs if token is set) ===
+          cov-commit-defects `
+            --dir cov-int `
+            --url "$env:COVERITY_CONNECT_URL" `
+            --stream "$env:COVERITY_STREAM" `
+            --username "$env:COVERITY_USER" `
+            --password "$env:COVERITY_PASSWORD" `
+            $args
+
+      # =====================================================================
+      # COMMIT DEFECTS — TOKEN
+      # =====================================================================
       - name: Commit defects (token)
         if: env.COVERITY_AUTH_TOKEN != ''
-        shell: bash
+        shell: pwsh
         run: |
-          ARGS=""
-          if [ -n "${COVERITY_PROJECT:-}" ]; then
-            ARGS="--scm-project-name ${COVERITY_PROJECT}"
-          fi
-          # If your Connect supports --auth-key-file
-          cov-commit-defects \
-            --dir cov-int \
-            --url "${COVERITY_CONNECT_URL}" \
-            --stream "${COVERITY_STREAM}" \
-            --auth-key-file <(printf "%s" "${COVERITY_AUTH_TOKEN}") \
-            ${ARGS}
+          $args = ""
+          if ("$env:COVERITY_PROJECT" -ne "") {
+            $args = "--scm-project-name $env:COVERITY_PROJECT"
+          }
 
-      # Optional SARIF (only if your version supports it)
-      # - name: Generate SARIF
-      #   run: |
-      #     cov-format-errors --dir cov-int --types all --sarif-output results.sarif
-      # - name: Upload SARIF
-      #   uses: github/codeql-action/upload-sarif@v3
-      #   with:
-      #     sarif_file: results.sarif
+          $tokenFile = "cov_token.txt"
+          Set-Content -Path $tokenFile -Value $env:COVERITY_AUTH_TOKEN
+
+          cov-commit-defects `
+            --dir cov-int `
+            --url "$env:COVERITY_CONNECT_URL" `
+            --stream "$env:COVERITY_STREAM" `
+            --auth-key-file $tokenFile `
+            $args
