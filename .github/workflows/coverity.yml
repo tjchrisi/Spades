@@ -15,7 +15,7 @@ env:
   COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
-  COVERITY_BIN_DIR:      ${{ vars.COVERITY_BIN_DIR }}
+  COVERITY_BIN_DIR:      ${{ vars.COVERITY_BIN_DIR }} # e.g., C:\coverity\bin
   COVERITY_USER:         ${{ secrets.COVERITY_USER }}
   COVERITY_PASSWORD:     ${{ secrets.COVERITY_PASSWORD }}
   COVERITY_AUTH_TOKEN:   ${{ secrets.COVERITY_AUTH_TOKEN }}
@@ -23,56 +23,43 @@ env:
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-    runs-on: windows-latest
+    # Choose ONE:
+    # runs-on: windows-latest
+    runs-on: [self-hosted, windows]   # <-- if you have a self-hosted Windows runner online
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # If you can fetch Coverity tools at runtime, do it here (example placeholder)
-      # - name: Install Coverity tools (example)
-      #   shell: pwsh
-      #   run: |
-      #     # Download and install your Coverity CLI to $env:RUNNER_TEMP\coverity\bin
-      #     # Set COVERITY_BIN_DIR to that location or add to PATH
-      #     echo "$env:COVERITY_BIN_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Add Coverity tools to PATH
+      - name: "Add Coverity tools to PATH (Windows)"
         shell: pwsh
         run: |
           if (-not "$env:COVERITY_BIN_DIR") {
-            Write-Error "COVERITY_BIN_DIR not set. Set it in Variables or install tools."
+            Write-Error "COVERITY_BIN_DIR not set. Set it in GitHub → Variables."
           }
           echo "$env:COVERITY_BIN_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Checking tool availability..."
+          Get-Command cov-build -ErrorAction SilentlyContinue
+          Get-Command cov-analyze -ErrorAction SilentlyContinue
+          Get-Command cov-commit-defects -ErrorAction SilentlyContinue
 
-      - name: Verify Coverity CLI presence
-        shell: pwsh
-        run: |
-          $missing = @()
-          foreach ($cmd in @('cov-build','cov-analyze','cov-commit-defects')) {
-            if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { $missing += $cmd }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Error "Missing Coverity tools: $($missing -join ', ')."
-          }
-
-      - name: Prepare cov-int directory
+      - name: "Prepare cov-int directory"
         shell: pwsh
         run: |
           if (Test-Path "cov-int") { Remove-Item -Recurse -Force cov-int }
           New-Item -ItemType Directory -Path cov-int | Out-Null
 
-      - name: Build (.NET example) through cov-build
+      - name: "Build (.NET example) through cov-build"
         shell: pwsh
         run: |
           cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
-      - name: Cov-Analyze
+      - name: "Cov-Analyze"
         shell: pwsh
         run: |
           cov-analyze --dir cov-int --all --webapp-security
 
-      - name: Commit defects (username/password)
+      - name: "Commit defects (username/password)"
         if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
         shell: pwsh
         run: |
@@ -88,7 +75,7 @@ jobs:
             --password "$env:COVERITY_PASSWORD" `
             $args
 
-      - name: Commit defects (token)
+      - name: "Commit defects (token)"
         if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
         shell: pwsh
         run: |
