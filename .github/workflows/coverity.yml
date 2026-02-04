@@ -1,4 +1,4 @@
-name: Coverity Connect Scan (Windows)
+name: Coverity Connect Scan (Windows, Self-Hosted)
 
 on:
   push:
@@ -11,16 +11,19 @@ permissions:
   security-events: write
   pull-requests: write
 
+# Stop overlapping runs of the same ref (optional but recommended)
+concurrency:
+  group: coverity-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  # ---- Your Coverity Connect server ----
+  # ---- Coverity Connect server & metadata ----
   COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
-  # ---- Windows path where tools will be available on the runner ----
-  # If you install Coverity during the job, point this to that location.
-  # Example if you unzip to RUNNER_TEMP: C:\Users\runneradmin\AppData\Local\Temp\coverity\bin
-  COVERITY_BIN_DIR:      ${{ vars.COVERITY_BIN_DIR }}
+  # ---- Local Windows path to your Coverity CLI (EDIT if needed) ----
+  COVERITY_BIN_DIR:      C:\Coverity\bin
 
   # ---- Credentials ----
   COVERITY_USER:         ${{ secrets.COVERITY_USER }}
@@ -30,42 +33,46 @@ env:
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-    runs-on: windows-latest
+    # If you added a custom label (e.g., coverity) during runner setup, include it below.
+    runs-on: [self-hosted, windows] # or: [self-hosted, windows, coverity]
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # OPTIONAL: Install Coverity tools on the GitHub-hosted runner.
-      # Replace this placeholder with the actual download/installation method available to you
-      # (internal artifact feed, private storage, or prepackaged zip).
-      # Then set COVERITY_BIN_DIR to the extracted bin path (or echo it to PATH).
-      # Example skeleton:
-      # - name: Install Coverity CLI
-      #   shell: pwsh
-      #   run: |
-      #     $dest = Join-Path $env:RUNNER_TEMP "coverity"
-      #     New-Item -ItemType Directory -Path $dest -Force | Out-Null
-      #     # Example: Invoke-WebRequest to your internal URL, then Expand-Archive
-      #     # Invoke-WebRequest -Uri "https://your-internal-url/coverity.zip" -OutFile "$dest\cov.zip"
-      #     # Expand-Archive -Path "$dest\cov.zip" -DestinationPath $dest -Force
-      #     # Set COVERITY_BIN_DIR for this job if not using repo-level variable:
-      #     # echo "$dest\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Add Coverity tools to PATH (Windows)
+      # Ensure the runner is really Windows (defensive)
+      - name: Verify OS
         shell: pwsh
         run: |
-          if (-not "$env:COVERITY_BIN_DIR") {
-            Write-Error "COVERITY_BIN_DIR not set. Set it (e.g., to the path where you installed/unzipped Coverity) or add an install step."
+          Write-Host "Runner OS: $env:RUNNER_OS"
+          if ($env:RUNNER_OS -ne "Windows") {
+            Write-Error "This job requires a Windows self-hosted runner."
           }
-          echo "$env:COVERITY_BIN_DIR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "Checking tool availability..."
+
+      - name: Add Coverity tools to PATH
+        shell: pwsh
+        run: |
+          $bin = "${env:COVERITY_BIN_DIR}"
+          if (-not (Test-Path $bin)) {
+            Write-Error "COVERITY_BIN_DIR not found: $bin. Edit the workflow to point at your actual Coverity 'bin' folder."
+          }
+          echo $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Added to PATH: $bin"
+
+      - name: Verify Coverity CLI presence
+        shell: pwsh
+        run: |
           $missing = @()
           foreach ($cmd in @('cov-build','cov-analyze','cov-commit-defects')) {
             if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { $missing += $cmd }
           }
           if ($missing.Count -gt 0) {
-            Write-Error "Missing Coverity tools: $($missing -join ', '). Ensure COVERITY_BIN_DIR is correct or install Coverity in a prior step."
+            Write-Error "Missing Coverity tools on PATH: $($missing -join ', '). Check COVERITY_BIN_DIR and that Coverity is installed on the runner."
+          } else {
+            cov-build --version
+            cov-analyze --version
+            cov-commit-defects --version
           }
 
       - name: Prepare cov-int directory
@@ -75,23 +82,23 @@ jobs:
           New-Item -ItemType Directory -Path cov-int | Out-Null
 
       # =====================================================================
-      # BUILD SECTION — Choose ONE based on your project type
+      # BUILD — choose ONE path (uncomment/adjust as needed)
       # =====================================================================
 
-      # Example: .NET / C#
-      - name: Build (.NET example) through cov-build
+      # Example: .NET / C# build
+      - name: Build (.NET example) via cov-build
         shell: pwsh
         run: |
           cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
       # Example: Java / Maven
-      # - name: Build (Maven) through cov-build
+      # - name: Build (Maven) via cov-build
       #   shell: pwsh
       #   run: |
       #     cov-build --dir cov-int --fs-capture-search . -- mvn -B -DskipTests clean package
 
       # Example: C/C++ (MSBuild)
-      # - name: Build (MSBuild C/C++) through cov-build
+      # - name: Build (MSBuild C/C++) via cov-build
       #   shell: pwsh
       #   run: |
       #     cov-build --dir cov-int --fs-capture-search . -- msbuild.exe MySolution.sln /p:Configuration=Release
@@ -113,8 +120,9 @@ jobs:
         run: |
           $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
-            $args = "--scm-project-name $env:COVERITY_PROJECT"
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
           }
+
           cov-commit-defects `
             --dir cov-int `
             --url "$env:COVERITY_CONNECT_URL" `
@@ -132,10 +140,12 @@ jobs:
         run: |
           $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
-            $args = "--scm-project-name $env:COVERITY_PROJECT"
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
           }
+
           $tokenFile = "cov_token.txt"
           Set-Content -Path $tokenFile -Value $env:COVERITY_AUTH_TOKEN
+
           cov-commit-defects `
             --dir cov-int `
             --url "$env:COVERITY_CONNECT_URL" `
