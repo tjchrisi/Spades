@@ -1,31 +1,9 @@
-name: Coverity Connect Scan (Windows)
-
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  security-events: write
-  pull-requests: write
-
-env:
-  COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}
-  COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
-  COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
-  COVERITY_BIN_DIR:      ${{ vars.COVERITY_BIN_DIR }} # e.g., C:\coverity\bin
-  COVERITY_USER:         ${{ secrets.COVERITY_USER }}
-  COVERITY_PASSWORD:     ${{ secrets.COVERITY_PASSWORD }}
-  COVERITY_AUTH_TOKEN:   ${{ secrets.COVERITY_AUTH_TOKEN }}
-
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-    # Choose ONE:
-    # runs-on: windows-latest
-    runs-on: [self-hosted, windows]   # <-- if you have a self-hosted Windows runner online
+    # Choose ONE of the following:
+    # runs-on: windows-latest                 # GitHub-hosted Windows
+    runs-on: [self-hosted, windows]           # Self-hosted Windows runner
 
     steps:
       - name: Checkout
@@ -91,4 +69,3 @@ jobs:
             --stream "$env:COVERITY_STREAM" `
             --auth-key-file $tokenFile `
             $args
-``
