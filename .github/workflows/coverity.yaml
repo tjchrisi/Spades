@@ -2,31 +2,26 @@ name: Coverity Connect Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  # Enable if you plan to upload SARIF to GitHub code scanning
   security-events: write
   pull-requests: write
 
 env:
-  # ---- Non-secret configuration (set these as Actions Variables) ----
-  COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}   # e.g., https://coverity.example.com
-  COVERITY_STREAM: ${{ vars.COVERITY_STREAM }}             # e.g., my-repo-main
-  # Optional: set a project name (if your Connect version uses project/stream linkage)
-  COVERITY_PROJECT: ${{ vars.COVERITY_PROJECT }}
+  # ==== Non-secret, set as Actions Variables (Settings → Secrets and variables → Actions → Variables) ====
+  COVERITY_CONNECT_URL: ${{ vars.COVERITY_CONNECT_URL }}   # e.g. https://coverity.example.com
+  COVERITY_STREAM: ${{ vars.COVERITY_STREAM }}             # e.g. my-repo-main
+  COVERITY_PROJECT: ${{ vars.COVERITY_PROJECT }}           # optional
+  COVERITY_BIN_DIR: ${{ vars.COVERITY_BIN_DIR }}           # e.g. /opt/coverity/bin (optional)
 
-  # ---- Credentials (choose ONE approach, set as Actions Secrets) ----
+  # ==== Secrets (choose ONE method), set under Actions → Secrets ====
   COVERITY_USER: ${{ secrets.COVERITY_USER }}              # Option A: user
   COVERITY_PASSWORD: ${{ secrets.COVERITY_PASSWORD }}      # Option A: password
-  COVERITY_AUTH_TOKEN: ${{ secrets.COVERITY_AUTH_TOKEN }}  # Option B: token (preferred if supported)
-
-  # ---- Tooling ----
-  # If Coverity tools are pre-installed on runner, set this to their bin path (e.g., /opt/coverity/bin)
-  COVERITY_BIN_DIR: ${{ vars.COVERITY_BIN_DIR }}
+  COVERITY_AUTH_TOKEN: ${{ secrets.COVERITY_AUTH_TOKEN }}  # Option B: token
 
 jobs:
   coverity-connect:
@@ -41,114 +36,88 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${COVERITY_BIN_DIR}" ]]; then
-            echo "Adding COVERITY_BIN_DIR to PATH: ${COVERITY_BIN_DIR}"
-            echo "${COVERITY_BIN_DIR}" >> $GITHUB_PATH
-          else
-            echo "NOTE: COVERITY_BIN_DIR not provided. Make sure cov-build/cov-analyze/cov-commit-defects are on PATH."
+          if [ -n "${COVERITY_BIN_DIR:-}" ]; then
+            echo "${COVERITY_BIN_DIR}" >> "$GITHUB_PATH"
           fi
-          # Show tool versions if available
-          command -v cov-build && cov-build --version || echo "cov-build not found (yet)"
-          command -v cov-analyze && cov-analyze --version || echo "cov-analyze not found (yet)"
-          command -v cov-commit-defects && cov-commit-defects --help >/dev/null 2>&1 || echo "cov-commit-defects not found (yet)"
+          command -v cov-build || echo "cov-build not found"
+          command -v cov-analyze || echo "cov-analyze not found"
+          command -v cov-commit-defects || echo "cov-commit-defects not found"
 
-      - name: Install build prerequisites (typical Linux C/C++)
+      - name: Install prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
 
-      # =================================================================
-      # Choose ONE build path below and comment out the others.
-      # =================================================================
-
-      # ===== C/C++ example (Make/CMake) =====
-      - name: Clean capture directory
+      - name: Prepare capture directory
         run: |
           rm -rf cov-int
           mkdir -p cov-int
 
-      # Example for Make (wrap your build with cov-build):
-      - name: Build (C/C++ with Make) via cov-build
+      # ===== Choose ONE build. Example: Make (C/C++) =====
+      - name: Build with cov-build (Make example)
         run: |
-          # Replace this with your real build:
-          # For CMake:
-          #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          #   cov-build --dir cov-int --fs-capture-search . -- cmake --build build -j"$(nproc)"
           cov-build --dir cov-int --fs-capture-search . -- make -j"$(nproc)"
 
-      # ===== Java example (Maven/Gradle) =====
+      # ===== If Java/.NET, replace the step above with one of these examples =====
       # - name: Setup Java
       #   uses: actions/setup-java@v4
       #   with:
       #     distribution: temurin
-      #     java-version: '17'
-      #
+      #     java-version: "17"
       # - name: Build (Maven) via cov-build
       #   run: |
-      #     rm -rf cov-int && mkdir -p cov-int
       #     cov-build --dir cov-int --fs-capture-search . -- mvn -B -DskipTests clean package
       #
-      # - name: Build (Gradle) via cov-build
-      #   run: |
-      #     rm -rf cov-int && mkdir -p cov-int
-      #     cov-build --dir cov-int --fs-capture-search . -- ./gradlew build -x test
-
-      # ===== .NET example (dotnet) =====
       # - name: Setup .NET
       #   uses: actions/setup-dotnet@v4
       #   with:
-      #     dotnet-version: '8.0.x'
-      #
+      #     dotnet-version: "8.0.x"
       # - name: Build (.NET) via cov-build
       #   run: |
-      #     rm -rf cov-int && mkdir -p cov-int
       #     cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
-      # =================================================================
-      # Run Coverity static analysis
-      # =================================================================
       - name: Analyze
         run: |
-          # --webapp-security enables additional checkers for web issues; remove if not relevant.
           cov-analyze --dir cov-int --all --webapp-security
 
-      # =================================================================
-      # Commit defects to Coverity Connect (choose ONE auth method)
-      # =================================================================
+      # === Commit with username/password (only runs if both are set) ===
       - name: Commit defects (user/password)
         if: env.COVERITY_USER != '' && env.COVERITY_PASSWORD != ''
         run: |
+          ARGS=""
+          if [ -n "${COVERITY_PROJECT:-}" ]; then
+            ARGS="--scm-project-name ${COVERITY_PROJECT}"
+          fi
           cov-commit-defects \
             --dir cov-int \
             --url "${COVERITY_CONNECT_URL}" \
             --stream "${COVERITY_STREAM}" \
             --username "${COVERITY_USER}" \
             --password "${COVERITY_PASSWORD}" \
-            ${COVERITY_PROJECT:+--scm-project-name "${COVERITY_PROJECT}"}
+            ${ARGS}
 
+      # === Commit with token (only runs if token is set) ===
       - name: Commit defects (token)
         if: env.COVERITY_AUTH_TOKEN != ''
+        shell: bash
         run: |
-          # Some versions support --auth-key-file and --on-new-cert trust
+          ARGS=""
+          if [ -n "${COVERITY_PROJECT:-}" ]; then
+            ARGS="--scm-project-name ${COVERITY_PROJECT}"
+          fi
+          # If your Connect supports --auth-key-file
           cov-commit-defects \
             --dir cov-int \
             --url "${COVERITY_CONNECT_URL}" \
             --stream "${COVERITY_STREAM}" \
-            --auth-key-file <(echo "${COVERITY_AUTH_TOKEN}") \
-            ${COVERITY_PROJECT:+--scm-project-name "${COVERITY_PROJECT}"}
+            --auth-key-file <(printf "%s" "${COVERITY_AUTH_TOKEN}") \
+            ${ARGS}
 
-      # =================================================================
-      # (Optional) Export SARIF (if your version supports it) and upload
-      # =================================================================
-      # - name: Generate SARIF (if supported)
+      # Optional SARIF (only if your version supports it)
+      # - name: Generate SARIF
       #   run: |
-      #     cov-format-errors \
-      #       --dir cov-int \
-      #       --types all \
-      #       --sarif-output results.sarif
-      #
-      # - name: Upload SARIF to GitHub code scanning
+      #     cov-format-errors --dir cov-int --types all --sarif-output results.sarif
+      # - name: Upload SARIF
       #   uses: github/codeql-action/upload-sarif@v3
       #   with:
       #     sarif_file: results.sarif
-``
