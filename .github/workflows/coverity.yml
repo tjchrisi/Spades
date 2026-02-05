@@ -11,7 +11,7 @@ permissions:
   security-events: write
   pull-requests: write
 
-# Stop overlapping runs of the same ref (optional but recommended)
+# Prevent overlapping runs
 concurrency:
   group: coverity-${{ github.ref }}
   cancel-in-progress: false
@@ -22,7 +22,7 @@ env:
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
-  # ---- Local Windows path to your Coverity CLI (EDIT if needed) ----
+  # ---- Local Windows path to your Coverity CLI ----
   COVERITY_BIN_DIR:      C:\Coverity\bin
 
   # ---- Credentials ----
@@ -33,87 +33,94 @@ env:
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-    # If you added a custom label (e.g., coverity) during runner setup, include it below.
-    runs-on: [self-hosted, windows] # or: [self-hosted, windows, coverity]
+
+    # MUST MATCH your runner's labels from GitHub UI
+    runs-on: [self-hosted, windows]
+
     timeout-minutes: 90
 
     steps:
-      - name: Checkout
+      # -------------------------------------------------------------------
+      # CHECKOUT
+      # -------------------------------------------------------------------
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      # Ensure the runner is really Windows (defensive)
-      - name: Verify OS
+      # -------------------------------------------------------------------
+      # VERIFY WINDOWS & PWSH
+      # -------------------------------------------------------------------
+      - name: Verify runner environment
         shell: pwsh
         run: |
           Write-Host "Runner OS: $env:RUNNER_OS"
+          Write-Host "pwsh version: $($PSVersionTable.PSVersion)"
           if ($env:RUNNER_OS -ne "Windows") {
-            Write-Error "This job requires a Windows self-hosted runner."
+            throw "This job requires a Windows self-hosted runner."
           }
 
+      # -------------------------------------------------------------------
+      # ENSURE COVERITY BIN EXISTS & ADD TO PATH
+      # -------------------------------------------------------------------
       - name: Add Coverity tools to PATH
         shell: pwsh
         run: |
           $bin = "${env:COVERITY_BIN_DIR}"
           if (-not (Test-Path $bin)) {
-            Write-Error "COVERITY_BIN_DIR not found: $bin. Edit the workflow to point at your actual Coverity 'bin' folder."
+            throw "COVERITY_BIN_DIR not found: $bin. Check your runner installation."
           }
-          echo $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "Added to PATH: $bin"
 
+          Write-Host "Adding Coverity bin to PATH: $bin"
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # -------------------------------------------------------------------
+      # VERIFY COVERITY COMMANDS AVAILABLE
+      # -------------------------------------------------------------------
       - name: Verify Coverity CLI presence
         shell: pwsh
         run: |
           $missing = @()
           foreach ($cmd in @('cov-build','cov-analyze','cov-commit-defects')) {
-            if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { $missing += $cmd }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Error "Missing Coverity tools on PATH: $($missing -join ', '). Check COVERITY_BIN_DIR and that Coverity is installed on the runner."
-          } else {
-            cov-build --version
-            cov-analyze --version
-            cov-commit-defects --version
+            if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+              $missing += $cmd
+            }
           }
 
+          if ($missing.Count -gt 0) {
+            throw "Missing Coverity tools: $($missing -join ', '). Ensure Coverity is installed in COVERITY_BIN_DIR."
+          }
+
+          cov-build --version
+          cov-analyze --version
+          cov-commit-defects --version
+
+      # -------------------------------------------------------------------
+      # CLEAN + CREATE COV-INT DIRECTORY
+      # -------------------------------------------------------------------
       - name: Prepare cov-int directory
         shell: pwsh
         run: |
           if (Test-Path "cov-int") { Remove-Item -Recurse -Force cov-int }
           New-Item -ItemType Directory -Path cov-int | Out-Null
 
-      # =====================================================================
-      # BUILD — choose ONE path (uncomment/adjust as needed)
-      # =====================================================================
-
-      # Example: .NET / C# build
-      - name: Build (.NET example) via cov-build
+      # -------------------------------------------------------------------
+      # BUILD — .NET EXAMPLE (you can replace this with another build type)
+      # -------------------------------------------------------------------
+      - name: Build (.NET) via cov-build
         shell: pwsh
         run: |
           cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
-      # Example: Java / Maven
-      # - name: Build (Maven) via cov-build
-      #   shell: pwsh
-      #   run: |
-      #     cov-build --dir cov-int --fs-capture-search . -- mvn -B -DskipTests clean package
-
-      # Example: C/C++ (MSBuild)
-      # - name: Build (MSBuild C/C++) via cov-build
-      #   shell: pwsh
-      #   run: |
-      #     cov-build --dir cov-int --fs-capture-search . -- msbuild.exe MySolution.sln /p:Configuration=Release
-
-      # =====================================================================
+      # -------------------------------------------------------------------
       # ANALYZE
-      # =====================================================================
+      # -------------------------------------------------------------------
       - name: Cov-Analyze
         shell: pwsh
         run: |
           cov-analyze --dir cov-int --all --webapp-security
 
-      # =====================================================================
-      # COMMIT DEFECTS — USER/PASS
-      # =====================================================================
+      # -------------------------------------------------------------------
+      # COMMIT DEFECTS — USER/PASSWORD AUTH
+      # -------------------------------------------------------------------
       - name: Commit defects (username/password)
         if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
         shell: pwsh
@@ -131,9 +138,9 @@ jobs:
             --password "$env:COVERITY_PASSWORD" `
             $args
 
-      # =====================================================================
+      # -------------------------------------------------------------------
       # COMMIT DEFECTS — TOKEN
-      # =====================================================================
+      # -------------------------------------------------------------------
       - name: Commit defects (token)
         if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
         shell: pwsh
