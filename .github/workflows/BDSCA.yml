@@ -1,0 +1,59 @@
+name: Black Duck SCA
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  security-events: write
+  pull-requests: write
+
+concurrency:
+  group: blackduck-sca-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sca:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build (skip tests if Maven project)
+        run: |
+          bash -lc 'if [ -f pom.xml ]; then mvn -B -DskipTests package; else echo "No Maven project detected; skipping build."; fi'
+
+      - name: Preflight - Validate BLACKDUCK_URL format
+        run: |
+          URL="${{ vars.BLACKDUCK_URL }}"
+          if [[ -z "$URL" ]]; then
+            echo "BLACKDUCK_URL is empty"; exit 1
+          fi
+          if [[ "$URL" == */sca ]]; then
+            echo "BLACKDUCK_URL must be the BASE host (no trailing /sca). Current: $URL"
+            exit 1
+          fi
+          echo "BLACKDUCK_URL looks good: $URL"
+
+      - name: DEBUG - reached Black Duck step
+        run: echo "About to run Black Duck SCA step..."
+
+      - name: Black Duck SCA Scan
+        uses: blackduck-inc/black-duck-security-scan@v2.1.1
+        with:
+          blackducksca_url: ${{ vars.BLACKDUCK_URL }}
+          blackducksca_token: ${{ secrets.BLACKDUCK_API_TOKEN }}
+          blackducksca_prcomment_enabled: true
+          github_token: ${{ secrets.GITHUB_TOKEN }}
