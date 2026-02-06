@@ -23,8 +23,8 @@ env:
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
   # ---- Local Windows path to your Coverity CLI ----
-  # If using Black Duck Desktop tools, set to its bin path, e.g.:
-  # C:\Users\TracyChrisinger\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
+  # RECOMMENDED: point this to the Black Duck Desktop-installed tools if you use them, e.g.:
+  # C:\Users\<User>\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
   COVERITY_BIN_DIR:      C:\Coverity\bin
 
   # Optional: fail fast if a 32-bit shell is used
@@ -88,6 +88,30 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -----------------------------------------------------------
+      # SANITY-CHECK: EXE headers must be Windows PE ('MZ')
+      # -----------------------------------------------------------
+      - name: Sanity-check Coverity EXE headers
+        run: |
+          $paths = @(
+            Join-Path $env:COVERITY_BIN_DIR 'cov-build.exe'),
+            (Join-Path $env:COVERITY_BIN_DIR 'cov-analyze.exe'),
+            (Join-Path $env:COVERITY_BIN_DIR 'cov-commit-defects.exe')
+          )
+
+          foreach ($p in $paths) {
+            if (-not (Test-Path $p)) { throw "Missing expected tool: $p" }
+            $fi = Get-Item $p
+            if ($fi.Length -lt 4096) {
+              throw "File too small to be a valid EXE: $p ($($fi.Length) bytes). Reinstall or replace this tool."
+            }
+            $bytes = Get-Content -Path $p -AsByteStream -TotalCount 2
+            if ($bytes.Count -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+              throw "Invalid Windows executable header (missing 'MZ') for: $p. This is not a valid Windows EXE. Reinstall/replace."
+            }
+            Write-Host ("OK: {0} (size {1} bytes)" -f $p, $fi.Length)
+          }
+
+      # -----------------------------------------------------------
       # VERIFY COVERITY CLI (tolerant exit codes; capture stdout/stderr)
       # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
@@ -105,9 +129,6 @@ jobs:
           Write-Host ("cov-build:          {0}" -f $resolved['cov-build'])
           Write-Host ("cov-analyze:        {0}" -f $resolved['cov-analyze'])
           Write-Host ("cov-commit-defects: {0}" -f $resolved['cov-commit-defects'])
-
-          # Helper to run a tool, accept specific exit codes, and show diagnostics
-          # We'll inline for each tool to avoid function scoping pitfalls.
 
           # ---- Probe: cov-build (accept 0 or 2 for --help) ----
           $exePath = $resolved['cov-build']
@@ -167,8 +188,12 @@ jobs:
           $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
           $outFile = "$tmpBase.out.txt"
           $errFile = "$tmpBase.err.txt"
-          $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-          $exit = $LASTEXITCODE
+          try {
+            $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
+            $exit = $LASTEXITCODE
+          } catch {
+            throw "Failed to start cov-commit-defects.exe. This usually means the file is not a valid Windows EXE or wrong platform. Verify COVERITY_BIN_DIR points to a proper Windows x64 installation and reinstall/replace the tool."
+          }
           if ($accept -contains $exit) {
             Write-Host ("cov-commit-defects {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
             $ok = $true
@@ -181,8 +206,12 @@ jobs:
             $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
             $outFile = "$tmpBase.out.txt"
             $errFile = "$tmpBase.err.txt"
-            $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-            $exit = $LASTEXITCODE
+            try {
+              $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
+              $exit = $LASTEXITCODE
+            } catch {
+              throw "Failed to start cov-commit-defects.exe on --help. The binary appears invalid for this OS. Replace it or set COVERITY_BIN_DIR to the correct bin directory."
+            }
             if ($accept -notcontains $exit) {
               $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
               $stdout = (Test-Path $outFile) ? (Get-Content $outFile -Raw) : "<no stdout>"
