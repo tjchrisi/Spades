@@ -201,8 +201,8 @@ jobs:
           # Print dotnet info for troubleshooting
           dotnet --info
 
-          # Use fs-capture for .NET builds
-          cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
+          # Build capture for .NET (no filesystem capture flag)
+          cov-build --dir cov-int -- dotnet build --configuration Release
 
       # -----------------------------------------------------------
       # ANALYZE
