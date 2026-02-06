@@ -184,3 +184,15 @@ jobs:
         run: |
           $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
+          }
+
+          $tokenFile = "cov_token.txt"
+          Set-Content -Path $tokenFile -Value $env:COVERITY_AUTH_TOKEN -Encoding ascii
+
+          cov-commit-defects `
+            --dir cov-int `
+            --url "$env:COVERITY_CONNECT_URL" `
+            --stream "$env:COVERITY_STREAM" `
+            --auth-key-file $tokenFile `
+            $args
