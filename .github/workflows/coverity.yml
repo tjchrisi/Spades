@@ -88,17 +88,121 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -----------------------------------------------------------
-      # VERIFY COVERITY CLI (use --help/--ident to avoid --version issues)
+      # VERIFY COVERITY CLI (no function; brace-safe)
       # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
         run: |
-          function Invoke-Tool([string]$exe, [string[]]$argArray) {
-            $cmd = Get-Command $exe -ErrorAction SilentlyContinue
-            if (-not $cmd) { throw "Missing on PATH: $exe" }
-            Write-Host ("{0}: {1}" -f $exe, $cmd.Source)
+          # Helper: run a tool with args and capture stderr; throw if non-zero
+          function Run-Checked {
+            param(
+              [Parameter(Mandatory=$true)][string]$Exe,
+              [Parameter(Mandatory=$true)][string[]]$Args
+            )
+            $cmd = Get-Command $Exe -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "Missing on PATH: $Exe" }
+            Write-Host ("{0}: {1}" -f $Exe, $cmd.Source)
 
-            $errFile = Join-Path $env:RUNNER_TEMP "$exe.err.txt"
+            $errFile = Join-Path $env:RUNNER_TEMP ("{0}.err.txt" -f $Exe.Replace('.','_'))
             if (Test-Path $errFile) { Remove-Item $errFile -Force -EA SilentlyContinue }
 
-            $p = Start-Process -FilePath $cmd.Source -ArgumentList $argArray -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
+            # Use array splatting to ensure arguments aren't lost
+            $p = Start-Process -FilePath $cmd.Source -ArgumentList $Args -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
             if ($p.ExitCode -ne 0) {
+              $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
+              throw ("{0} {1} failed with exit code {2}. STDERR:`n{3}" -f $Exe, ($Args -join ' '), $p.ExitCode, $stderr)
+            }
+          }
+
+          # Presence check
+          $missing = @()
+          foreach ($t in 'cov-build','cov-analyze','cov-commit-defects') {
+            if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { $missing += $t }
+          }
+          if ($missing) { throw "Missing Coverity tools on PATH: $($missing -join ', ')" }
+
+          # Probes tuned to your environment:
+          # cov-build: your binary does not support --version, so use --help (exit code 0 on your machine)
+          Run-Checked -Exe 'cov-build' -Args @('--help')
+
+          # cov-analyze: try --version first, fall back to --help
+          try {
+            Run-Checked -Exe 'cov-analyze' -Args @('--version')
+          } catch {
+            Write-Warning "cov-analyze --version failed; trying --help"
+            Run-Checked -Exe 'cov-analyze' -Args @('--help')
+          }
+
+          # cov-commit-defects: try --version, fall back to --help
+          try {
+            Run-Checked -Exe 'cov-commit-defects' -Args @('--version')
+          } catch {
+            Write-Warning "cov-commit-defects --version failed; trying --help"
+            Run-Checked -Exe 'cov-commit-defects' -Args @('--help')
+          }
+
+      # -----------------------------------------------------------
+      # PREPARE cov-int
+      # -----------------------------------------------------------
+      - name: Prepare cov-int directory
+        run: |
+          if (Test-Path "cov-int") { Remove-Item -Recurse -Force cov-int }
+          New-Item -ItemType Directory -Path cov-int | Out-Null
+
+      # -----------------------------------------------------------
+      # BUILD — .NET / C#
+      # -----------------------------------------------------------
+      - name: Build (.NET) via cov-build
+        run: |
+          # Print dotnet info for troubleshooting
+          dotnet --info
+
+          # Use fs-capture for .NET builds
+          cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
+
+      # -----------------------------------------------------------
+      # ANALYZE
+      # -----------------------------------------------------------
+      - name: Cov-Analyze
+        run: |
+          cov-analyze --dir cov-int --all --webapp-security
+
+      # -----------------------------------------------------------
+      # COMMIT DEFECTS — USER/PASSWORD AUTH
+      # -----------------------------------------------------------
+      - name: Commit defects (username/password)
+        if: ${{ env.COVERITY_USER != '' && env:COVERITY_PASSWORD != '' }}
+        run: |
+          $args = ""
+          if ("$env:COVERITY_PROJECT" -ne "") {
+            # careful quoting for a value with spaces
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
+          }
+
+          cov-commit-defects `
+            --dir cov-int `
+            --url "$env:COVERITY_CONNECT_URL" `
+            --stream "$env:COVERITY_STREAM" `
+            --username "$env:COVERITY_USER" `
+            --password "$env:COVERITY_PASSWORD" `
+            $args
+
+      # -----------------------------------------------------------
+      # COMMIT DEFECTS — TOKEN AUTH
+      # -----------------------------------------------------------
+      - name: Commit defects (token)
+        if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
+        run: |
+          $args = ""
+          if ("$env:COVERITY_PROJECT" -ne "") {
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
+          }
+
+          $tokenFile = "cov_token.txt"
+          Set-Content -Path $tokenFile -Value $env:COVERITY_AUTH_TOKEN -Encoding ascii
+
+          cov-commit-defects `
+            --dir cov-int `
+            --url "$env:COVERITY_CONNECT_URL" `
+            --stream "$env:COVERITY_STREAM" `
+            --auth-key-file $tokenFile `
+            $args
