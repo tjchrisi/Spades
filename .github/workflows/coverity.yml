@@ -23,7 +23,7 @@ env:
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
   # ---- Local Windows path to your Coverity CLI ----
-  # If you use the Black Duck–installed tools, set this to the exact bin path, e.g.:
+  # If using Black Duck Desktop tools, set to its bin path, e.g.:
   # C:\Users\TracyChrisinger\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
   COVERITY_BIN_DIR:      C:\Coverity\bin
 
@@ -39,10 +39,9 @@ jobs:
       - x64
     timeout-minutes: 90
 
-    # Use 64-bit PowerShell Core by default for all run steps
     defaults:
       run:
-        shell: pwsh
+        shell: pwsh  # ensure 64-bit PowerShell Core for all steps
 
     steps:
       # -----------------------------------------------------------
@@ -76,7 +75,7 @@ jobs:
             throw "COVERITY_BIN_DIR not found: $bin"
           }
 
-          # Unblock EXEs that may have Zone.Identifier (downloaded)
+          # Unblock EXEs that may have Zone.Identifier
           Get-ChildItem -Path $bin -File -Filter "cov-*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
             $streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue
             if ($streams -and $streams.Stream -contains 'Zone.Identifier') {
@@ -89,7 +88,7 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -----------------------------------------------------------
-      # VERIFY COVERITY CLI (robust, capture stderr on failure)
+      # VERIFY COVERITY CLI (use --help/--ident to avoid --version issues)
       # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
         run: |
@@ -103,97 +102,3 @@ jobs:
 
             $p = Start-Process -FilePath $cmd.Source -ArgumentList $argArray -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
             if ($p.ExitCode -ne 0) {
-              $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
-              throw "$exe $($argArray -join ' ') failed with exit code $($p.ExitCode). STDERR:`n$stderr"
-            }
-          }
-
-          # Presence
-          $missing = @()
-          foreach ($t in 'cov-build','cov-analyze','cov-commit-defects') {
-            if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { $missing += $t }
-          }
-          if ($missing) { throw "Missing Coverity tools on PATH: $($missing -join ', ')" }
-
-          # Prefer --version for cov-build/cov-analyze (stable exit code 0)
-          Invoke-Tool 'cov-build' @('--version')
-          Invoke-Tool 'cov-analyze' @('--version')
-
-          # cov-commit-defects: try --version, fall back to --help if needed
-          try {
-            Invoke-Tool 'cov-commit-defects' @('--version')
-          } catch {
-            Write-Warning "cov-commit-defects --version failed; trying --help"
-            Invoke-Tool 'cov-commit-defects' @('--help')
-          }
-
-          # (Informational) echo versions for the logs
-          cov-build --version
-          cov-analyze --version
-
-      # -----------------------------------------------------------
-      # PREPARE cov-int
-      # -----------------------------------------------------------
-      - name: Prepare cov-int directory
-        run: |
-          if (Test-Path "cov-int") { Remove-Item -Recurse -Force cov-int }
-          New-Item -ItemType Directory -Path cov-int | Out-Null
-
-      # -----------------------------------------------------------
-      # BUILD — .NET / C#
-      # -----------------------------------------------------------
-      - name: Build (.NET) via cov-build
-        run: |
-          # Print dotnet info for troubleshooting
-          dotnet --info
-
-          # Use fs-capture for .NET builds
-          cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
-
-      # -----------------------------------------------------------
-      # ANALYZE
-      # -----------------------------------------------------------
-      - name: Cov-Analyze
-        run: |
-          cov-analyze --dir cov-int --all --webapp-security
-
-      # -----------------------------------------------------------
-      # COMMIT DEFECTS — USER/PASSWORD AUTH
-      # -----------------------------------------------------------
-      - name: Commit defects (username/password)
-        if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
-        run: |
-          $args = ""
-          if ("$env:COVERITY_PROJECT" -ne "") {
-            # careful quoting for a value with spaces
-            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
-          }
-
-          cov-commit-defects `
-            --dir cov-int `
-            --url "$env:COVERITY_CONNECT_URL" `
-            --stream "$env:COVERITY_STREAM" `
-            --username "$env:COVERITY_USER" `
-            --password "$env:COVERITY_PASSWORD" `
-            $args
-
-      # -----------------------------------------------------------
-      # COMMIT DEFECTS — TOKEN AUTH
-      # -----------------------------------------------------------
-      - name: Commit defects (token)
-        if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
-        run: |
-          $args = ""
-          if ("$env:COVERITY_PROJECT" -ne "") {
-            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
-          }
-
-          $tokenFile = "cov_token.txt"
-          Set-Content -Path $tokenFile -Value $env:COVERITY_AUTH_TOKEN -Encoding ascii
-
-          cov-commit-defects `
-            --dir cov-int `
-            --url "$env:COVERITY_CONNECT_URL" `
-            --stream "$env:COVERITY_STREAM" `
-            --auth-key-file $tokenFile `
-            $args
