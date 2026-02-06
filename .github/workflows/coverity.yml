@@ -75,7 +75,7 @@ jobs:
             throw "COVERITY_BIN_DIR not found: $bin"
           }
 
-          # Unblock EXEs that may have Zone.Identifier
+          # Unblock EXEs that may have Zone.Identifier (downloaded)
           Get-ChildItem -Path $bin -File -Filter "cov-*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
             $streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue
             if ($streams -and $streams.Stream -contains 'Zone.Identifier') {
@@ -130,96 +130,60 @@ jobs:
           Write-Host ("cov-analyze:        {0}" -f $resolved['cov-analyze'])
           Write-Host ("cov-commit-defects: {0}" -f $resolved['cov-commit-defects'])
 
-          # ---- Probe: cov-build (accept 0 or 2 for --help) ----
-          $exePath = $resolved['cov-build']
-          $args = @('--help')
-          $accept = @(0,2)
-          $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
-          $outFile = "$tmpBase.out.txt"
-          $errFile = "$tmpBase.err.txt"
-          $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-          $exit = $LASTEXITCODE
-          if ($accept -notcontains $exit) {
-            $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
-            $stdout = (Test-Path $outFile) ? (Get-Content $outFile -Raw) : "<no stdout>"
-            throw ("cov-build {0} failed with exit code {1}.`nSTDERR:`n{2}`nSTDOUT:`n{3}" -f ($args -join ' '), $exit, $stderr, $stdout)
-          } else {
-            Write-Host ("cov-build {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
+          # Helper: run a tool (native) and capture stdout/stderr, tolerating expected exit codes
+          function Run-Probe {
+            param(
+              [Parameter(Mandatory=$true)][string]$ExePath,
+              [Parameter(Mandatory=$true)][string[]]$Args,
+              [Parameter(Mandatory=$true)][int[]]$AcceptExitCodes,
+              [string]$Label = ""
+            )
+            $label = if ($Label) { $Label } else { Split-Path $ExePath -Leaf }
+            $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
+            $outFile = "$tmpBase.out.txt"
+            $errFile = "$tmpBase.err.txt"
+
+            $out = & $ExePath @Args 2> $errFile
+            $exit = $LASTEXITCODE
+            $out | Out-File -FilePath $outFile -Encoding utf8
+
+            if ($AcceptExitCodes -notcontains $exit) {
+              $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
+              $stdout = (Test-Path $outFile) ? (Get-Content $outFile -Raw) : "<no stdout>"
+              throw ("{0} {1} failed with exit code {2}.`nSTDERR:`n{3}`nSTDOUT:`n{4}" -f $label, ($Args -join ' '), $exit, $stderr, $stdout)
+            } else {
+              Write-Host ("{0} {1} succeeded with exit code {2}" -f $label, ($Args -join ' '), $exit)
+            }
           }
 
-          # ---- Probe: cov-analyze (prefer --version==0; fallback to --help accept 0,2) ----
-          $exePath = $resolved['cov-analyze']
+          # Probes tuned for your environment:
+          # cov-build: --help may return 2 on Windows → accept 0,2
+          Run-Probe -ExePath $resolved['cov-build'] -Args @('--help') -AcceptExitCodes @(0,2) -Label 'cov-build'
+          # cov-analyze: try --version (0); if not, fallback to --help (accept 0,2)
           $ok = $false
-          $args = @('--version')
-          $accept = @(0)
-          $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
-          $outFile = "$tmpBase.out.txt"
-          $errFile = "$tmpBase.err.txt"
-          $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-          $exit = $LASTEXITCODE
-          if ($accept -contains $exit) {
-            Write-Host ("cov-analyze {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
+          try {
+            Run-Probe -ExePath $resolved['cov-analyze'] -Args @('--version') -AcceptExitCodes @(0) -Label 'cov-analyze'
             $ok = $true
-          } else {
+          } catch {
             Write-Warning "cov-analyze --version failed; trying --help"
           }
           if (-not $ok) {
-            $args = @('--help')
-            $accept = @(0,2)
-            $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
-            $outFile = "$tmpBase.out.txt"
-            $errFile = "$tmpBase.err.txt"
-            $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-            $exit = $LASTEXITCODE
-            if ($accept -notcontains $exit) {
-              $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
-              $stdout = (Test-Path $outFile) ? (Get-Content $outFile -Raw) : "<no stdout>"
-              throw ("cov-analyze {0} failed with exit code {1}.`nSTDERR:`n{2}`nSTDOUT:`n{3}" -f ($args -join ' '), $exit, $stderr, $stdout)
-            } else {
-              Write-Host ("cov-analyze {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
-            }
+            Run-Probe -ExePath $resolved['cov-analyze'] -Args @('--help') -AcceptExitCodes @(0,2) -Label 'cov-analyze'
           }
-
-          # ---- Probe: cov-commit-defects (try --version==0; fallback --help accept 0,1,2) ----
-          $exePath = $resolved['cov-commit-defects']
+          # cov-commit-defects: try --version (0); fallback --help (accept 0,1,2)
           $ok = $false
-          $args = @('--version')
-          $accept = @(0)
-          $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
-          $outFile = "$tmpBase.out.txt"
-          $errFile = "$tmpBase.err.txt"
           try {
-            $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-            $exit = $LASTEXITCODE
-          } catch {
-            throw "Failed to start cov-commit-defects.exe. This usually means the file is not a valid Windows EXE or wrong platform. Verify COVERITY_BIN_DIR points to a proper Windows x64 installation and reinstall/replace the tool."
-          }
-          if ($accept -contains $exit) {
-            Write-Host ("cov-commit-defects {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
+            Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--version') -AcceptExitCodes @(0) -Label 'cov-commit-defects'
             $ok = $true
-          } else {
+          } catch {
             Write-Warning "cov-commit-defects --version failed; trying --help"
           }
           if (-not $ok) {
-            $args = @('--help')
-            $accept = @(0,1,2)
-            $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
-            $outFile = "$tmpBase.out.txt"
-            $errFile = "$tmpBase.err.txt"
-            try {
-              $null = & $exePath @args 2> $errFile | Out-File -FilePath $outFile -Encoding utf8
-              $exit = $LASTEXITCODE
-            } catch {
-              throw "Failed to start cov-commit-defects.exe on --help. The binary appears invalid for this OS. Replace it or set COVERITY_BIN_DIR to the correct bin directory."
-            }
-            if ($accept -notcontains $exit) {
-              $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
-              $stdout = (Test-Path $outFile) ? (Get-Content $outFile -Raw) : "<no stdout>"
-              throw ("cov-commit-defects {0} failed with exit code {1}.`nSTDERR:`n{2}`nSTDOUT:`n{3}" -f ($args -join ' '), $exit, $stderr, $stdout)
-            } else {
-              Write-Host ("cov-commit-defects {0} succeeded with exit code {1}" -f ($args -join ' '), $exit)
-            }
+            Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--help') -AcceptExitCodes @(0,1,2) -Label 'cov-commit-defects'
           }
+
+          Write-Host "Verification complete — forcing success to avoid false non-zero status."
+          exit 0
 
       # -----------------------------------------------------------
       # PREPARE cov-int
