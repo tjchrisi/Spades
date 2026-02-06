@@ -88,7 +88,7 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # -----------------------------------------------------------
-      # VERIFY COVERITY CLI (no function; brace-safe)
+      # VERIFY COVERITY CLI (brace-safe; array args; stderr captured)
       # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
         run: |
@@ -105,7 +105,6 @@ jobs:
             $errFile = Join-Path $env:RUNNER_TEMP ("{0}.err.txt" -f $Exe.Replace('.','_'))
             if (Test-Path $errFile) { Remove-Item $errFile -Force -EA SilentlyContinue }
 
-            # Use array splatting to ensure arguments aren't lost
             $p = Start-Process -FilePath $cmd.Source -ArgumentList $Args -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
             if ($p.ExitCode -ne 0) {
               $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
@@ -121,10 +120,10 @@ jobs:
           if ($missing) { throw "Missing Coverity tools on PATH: $($missing -join ', ')" }
 
           # Probes tuned to your environment:
-          # cov-build: your binary does not support --version, so use --help (exit code 0 on your machine)
+          # cov-build: use --help (your version doesn’t support --version)
           Run-Checked -Exe 'cov-build' -Args @('--help')
 
-          # cov-analyze: try --version first, fall back to --help
+          # cov-analyze: try --version, fall back to --help
           try {
             Run-Checked -Exe 'cov-analyze' -Args @('--version')
           } catch {
@@ -170,7 +169,7 @@ jobs:
       # COMMIT DEFECTS — USER/PASSWORD AUTH
       # -----------------------------------------------------------
       - name: Commit defects (username/password)
-        if: ${{ env.COVERITY_USER != '' && env:COVERITY_PASSWORD != '' }}
+        if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
         run: |
           $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
