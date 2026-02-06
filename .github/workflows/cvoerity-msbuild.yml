@@ -1,4 +1,4 @@
-name: Coverity Connect Scan (Windows, Self-Hosted, MSBuild)
+name: Coverity Connect Scan (Windows, Self-Hosted)
 
 on:
   push:
@@ -22,27 +22,21 @@ env:
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
-  # If you're using username/password or token auth, surface secrets as env here:
-  COVERITY_USER:         ${{ secrets.COVERITY_USER }}
-  COVERITY_PASSWORD:     ${{ secrets.COVERITY_PASSWORD }}
-  COVERITY_AUTH_TOKEN:   ${{ secrets.COVERITY_AUTH_TOKEN }}
-
   # ---- Local Windows path to your Coverity CLI ----
-  # Example if installed by Black Duck Desktop tools:
+  # If using Black Duck Desktop tools, set to its bin path, e.g.:
   # C:\Users\<User>\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
   COVERITY_BIN_DIR:      C:\Coverity\bin
-
-  # ---- Solution and build config (edit these) ----
-  SOLUTION_FILE:         path\to\YourSolution.sln  # <--- TODO: update
-  BUILD_CONFIGURATION:   Release
-  BUILD_PLATFORM:        x64
 
   # Optional: fail fast if a 32-bit shell is used
   REQUIRE_64BIT_PWSH:    true
 
+  # ---- Path to your .sln (relative to repo root). UPDATE THIS. ----
+  # Example: Spades/Spades/Spades.sln
+  SOLUTION_PATH:         Spades/Spades/Spades.sln
+
 jobs:
   coverity:
-    name: Coverity Connect Scan (Windows MSBuild)
+    name: Coverity Connect Scan (Windows)
     runs-on:
       - self-hosted
       - windows
@@ -59,6 +53,9 @@ jobs:
       # -----------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          submodules: true   # if you use submodules; set false if not needed
+          fetch-depth: 0
 
       # -----------------------------------------------------------
       # VERIFY RUNNER & SHELL ARCH
@@ -72,16 +69,35 @@ jobs:
           Write-Host "PROCESSOR_ARCHITECTURE: $env:PROCESSOR_ARCHITECTURE"
           if ($env:RUNNER_OS -ne "Windows") { throw "This job requires a Windows self-hosted runner." }
           if ($env:REQUIRE_64BIT_PWSH -eq "true" -and -not [Environment]::Is64BitProcess) {
-            throw "This workflow requires 64-bit PowerShell. Current process is 32-bit."
+            throw "This step requires 64-bit PowerShell. Current process is 32-bit."
           }
 
       # -----------------------------------------------------------
-      # ADD COVERITY TO PATH (unblock and verify)
+      # DIAGNOSTICS: show workspace & locate .sln/.csproj
+      # -----------------------------------------------------------
+      - name: Show workspace & locate solution/project files
+        run: |
+          Write-Host "GITHUB_WORKSPACE: $env:GITHUB_WORKSPACE"
+          Set-Location $env:GITHUB_WORKSPACE
+          Write-Host "Repo root contents:"
+          Get-ChildItem -Force | Select-Object Mode,Length,Name | Format-Table -AutoSize
+          Write-Host "`nSearching for .sln / .csproj files..."
+          Get-ChildItem -Recurse -Include *.sln, *.csproj -ErrorAction SilentlyContinue |
+            Select-Object FullName | Format-Table -AutoSize
+          Write-Host "`nUsing SOLUTION_PATH: $env:SOLUTION_PATH"
+          if (-not (Test-Path $env:SOLUTION_PATH)) {
+            Write-Warning "SOLUTION_PATH does not exist: $env:SOLUTION_PATH"
+          }
+
+      # -----------------------------------------------------------
+      # ADD COVERITY TO PATH (with unblocking & existence checks)
       # -----------------------------------------------------------
       - name: Add Coverity tools to PATH
         run: |
-          $bin = "$env:COVERITY_BIN_DIR"
-          if (-not (Test-Path $bin)) { throw "COVERITY_BIN_DIR not found: $bin" }
+          $bin = "${env:COVERITY_BIN_DIR}"
+          if (-not (Test-Path $bin)) {
+            throw "COVERITY_BIN_DIR not found: $bin"
+          }
 
           # Unblock EXEs that may have Zone.Identifier (downloaded)
           Get-ChildItem -Path $bin -File -Filter "cov-*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -95,6 +111,9 @@ jobs:
           Write-Host "Adding to PATH: $bin"
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # -----------------------------------------------------------
+      # SANITY-CHECK: EXE headers must be Windows PE ('MZ')
+      # -----------------------------------------------------------
       - name: Sanity-check Coverity EXE headers
         run: |
           $paths = @(
@@ -102,6 +121,7 @@ jobs:
             (Join-Path $env:COVERITY_BIN_DIR 'cov-analyze.exe'),
             (Join-Path $env:COVERITY_BIN_DIR 'cov-commit-defects.exe')
           )
+
           foreach ($p in $paths) {
             if (-not (Test-Path $p)) { throw "Missing expected tool: $p" }
             $fi = Get-Item $p
@@ -110,15 +130,19 @@ jobs:
             }
             $bytes = Get-Content -Path $p -AsByteStream -TotalCount 2
             if ($bytes.Count -lt 2 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-              throw "Invalid Windows executable header (missing 'MZ') for: $p"
+              throw "Invalid Windows executable header (missing 'MZ') for: $p. This is not a valid Windows EXE. Reinstall/replace."
             }
             Write-Host ("OK: {0} (size {1} bytes)" -f $p, $fi.Length)
           }
 
+      # -----------------------------------------------------------
+      # VERIFY COVERITY CLI (tolerant exit codes; capture stdout/stderr)
+      # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
         run: |
-          $tools    = @('cov-build','cov-analyze','cov-commit-defects')
-          $missing  = @()
+          # Resolve tool paths first
+          $tools = @('cov-build','cov-analyze','cov-commit-defects')
+          $missing = @()
           $resolved = @{}
           foreach ($t in $tools) {
             $cmd = Get-Command $t -ErrorAction SilentlyContinue
@@ -137,7 +161,7 @@ jobs:
               [Parameter(Mandatory=$true)][int[]]$AcceptExitCodes,
               [string]$Label = ""
             )
-            $label   = if ($Label) { $Label } else { Split-Path $ExePath -Leaf }
+            $label = if ($Label) { $Label } else { Split-Path $ExePath -Leaf }
             $tmpBase = Join-Path $env:RUNNER_TEMP ([IO.Path]::GetRandomFileName())
             $outFile = "$tmpBase.out.txt"
             $errFile = "$tmpBase.err.txt"
@@ -155,56 +179,31 @@ jobs:
             }
           }
 
-          # Accept quirks: some tools return 2 on --help
-          Run-Probe -ExePath $resolved['cov-build']          -Args @('--help')    -AcceptExitCodes @(0,2) -Label 'cov-build'
-          try { Run-Probe -ExePath $resolved['cov-analyze']  -Args @('--version') -AcceptExitCodes @(0)    -Label 'cov-analyze' } catch { Run-Probe -ExePath $resolved['cov-analyze']  -Args @('--help') -AcceptExitCodes @(0,2) -Label 'cov-analyze' }
-          try { Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--version') -AcceptExitCodes @(0) -Label 'cov-commit-defects' } catch { Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--help') -AcceptExitCodes @(0,1,2) -Label 'cov-commit-defects' }
-
-          Write-Host "Verification complete — continuing."
-
-      # -----------------------------------------------------------
-      # LOCATE VISUAL STUDIO + MSBUILD AND IMPORT VC ENV
-      # (ensures x64 toolchain; helps prevent broken-pipe issues)
-      # -----------------------------------------------------------
-      - name: Locate Visual Studio and MSBuild (x64) + import DevCmd env
-        id: vs
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { throw "vswhere not found at $vswhere" }
-
-          $VSINSTALL = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
-          if (-not $VSINSTALL) { throw "Visual Studio with MSBuild not found" }
-          Write-Host "VSINSTALL: $VSINSTALL"
-
-          $MSBUILD = Join-Path $VSINSTALL "MSBuild\Current\Bin\MSBuild.exe"
-          if (-not (Test-Path $MSBUILD)) { throw "MSBuild.exe not found at $MSBUILD" }
-          Write-Host "MSBUILD: $MSBUILD"
-
-          # Export for later steps
-          "VSINSTALL=$VSINSTALL" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "MSBUILD=$MSBUILD"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-          # Import DevCmd environment for x64 toolset (important for C/C++ builds)
-          $vsdev = Join-Path $VSINSTALL "Common7\Tools\VsDevCmd.bat"
-          if (-not (Test-Path $vsdev)) { throw "VsDevCmd.bat not found: $vsdev" }
-
-          # Run the devcmd, then emit environment to a temp file via `set`
-          $tempEnv = Join-Path $env:RUNNER_TEMP "vc_env_$([Guid]::NewGuid()).txt"
-          & cmd /c "`"$vsdev`" -no_logo -arch=amd64 && set > `"$tempEnv`""
-          if ($LASTEXITCODE -ne 0) { throw "VsDevCmd.bat failed to initialize environment." }
-
-          # Import into current pwsh process
-          Get-Content $tempEnv | ForEach-Object {
-            if ($_ -match '^(.*?)=(.*)$') {
-              $name = $matches[1]; $value = $matches[2]
-              # Avoid clobbering sensitive GH variables; allow VS toolchain vars
-              if ($name -and $value -and $name -notmatch '^GITHUB_') {
-                [Environment]::SetEnvironmentVariable($name, $value)
-                Set-Item -Path "Env:$name" -Value $value -ErrorAction SilentlyContinue
-              }
-            }
+          # Probes tuned for your environment:
+          Run-Probe -ExePath $resolved['cov-build'] -Args @('--help') -AcceptExitCodes @(0,2) -Label 'cov-build'
+          $ok = $false
+          try {
+            Run-Probe -ExePath $resolved['cov-analyze'] -Args @('--version') -AcceptExitCodes @(0) -Label 'cov-analyze'
+            $ok = $true
+          } catch {
+            Write-Warning "cov-analyze --version failed; trying --help"
           }
-          Write-Host "VS Dev environment imported (x64)."
+          if (-not $ok) {
+            Run-Probe -ExePath $resolved['cov-analyze'] -Args @('--help') -AcceptExitCodes @(0,2) -Label 'cov-analyze'
+          }
+          $ok = $false
+          try {
+            Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--version') -AcceptExitCodes @(0) -Label 'cov-commit-defects'
+            $ok = $true
+          } catch {
+            Write-Warning "cov-commit-defects --version failed; trying --help"
+          }
+          if (-not $ok) {
+            Run-Probe -ExePath $resolved['cov-commit-defects'] -Args @('--help') -AcceptExitCodes @(0,1,2) -Label 'cov-commit-defects'
+          }
+
+          Write-Host "Verification complete — forcing success to avoid false non-zero status."
+          exit 0
 
       # -----------------------------------------------------------
       # PREPARE cov-int
@@ -215,31 +214,22 @@ jobs:
           New-Item -ItemType Directory -Path cov-int | Out-Null
 
       # -----------------------------------------------------------
-      # BUILD — MSBuild wrapped by cov-build
+      # RESTORE — .NET / C#
       # -----------------------------------------------------------
-      - name: Build (MSBuild via cov-build)
-        env:
-          MSBUILD: ${{ steps.vs.outputs.MSBUILD }}
+      - name: Restore (.NET)
         run: |
-          $solution = "$env:SOLUTION_FILE"
-          if (-not (Test-Path $solution)) { throw "Solution not found: $solution" }
+          dotnet --info
+          if (-not (Test-Path $env:SOLUTION_PATH)) {
+            throw "Configured SOLUTION_PATH not found: $env:SOLUTION_PATH. Check the relative path to your .sln."
+          }
+          dotnet restore "$env:SOLUTION_PATH"
 
-          $platform = "$env:BUILD_PLATFORM"
-          $config   = "$env:BUILD_CONFIGURATION"
-
-          Write-Host "Building $solution | Platform=$platform | Configuration=$config"
-          # Use /nr:false to avoid orphan nodes; /bl for diagnostics
-          # --no-command-redirect reduces wrapper stream complexity (mitigates pipe closure issues)
-          cov-build --dir cov-int --no-command-redirect -- `
-            "$env:MSBUILD" "$solution" `
-              /m `
-              /nr:false `
-              /p:Platform="$platform" `
-              /p:Configuration="$config" `
-              /p:ContinuousIntegrationBuild=true `
-              /clp:Summary `
-              /verbosity:m `
-              /bl:msbuild-$platform-$config.binlog
+      # -----------------------------------------------------------
+      # BUILD — .NET / C# (captured by Coverity)
+      # -----------------------------------------------------------
+      - name: Build (.NET) via cov-build
+        run: |
+          cov-build --dir cov-int -- dotnet build "$env:SOLUTION_PATH" --configuration Release
 
       # -----------------------------------------------------------
       # ANALYZE
@@ -254,9 +244,10 @@ jobs:
       - name: Commit defects (username/password)
         if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
         run: |
-          $args = @()
+          $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
-            $args += @("--scm-project-name", "$env:COVERITY_PROJECT")
+            # careful quoting for a value with spaces
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
           }
 
           cov-commit-defects `
@@ -265,7 +256,7 @@ jobs:
             --stream "$env:COVERITY_STREAM" `
             --username "$env:COVERITY_USER" `
             --password "$env:COVERITY_PASSWORD" `
-            @args
+            $args
 
       # -----------------------------------------------------------
       # COMMIT DEFECTS — TOKEN AUTH
@@ -273,9 +264,9 @@ jobs:
       - name: Commit defects (token)
         if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
         run: |
-          $args = @()
+          $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
-            $args += @("--scm-project-name", "$env:COVERITY_PROJECT")
+            $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
           }
 
           $tokenFile = "cov_token.txt"
@@ -286,18 +277,18 @@ jobs:
             --url "$env:COVERITY_CONNECT_URL" `
             --stream "$env:COVERITY_STREAM" `
             --auth-key-file $tokenFile `
-            @args
+            $args
 
       # -----------------------------------------------------------
-      # ARTIFACTS (binlog + cov-int) — helpful for troubleshooting
+      # Upload logs on failure (helps debug MSBuild/cov-build)
       # -----------------------------------------------------------
-      - name: Upload diagnostics artifacts
-        if: always()
+      - name: Upload cov-int logs on failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: coverity-msbuild-diagnostics
+          name: coverity-build-logs
           path: |
-            msbuild-*.binlog
-            cov-int/**/*
-          if-no-files-found: ignore
-          retention-days: 7
+            cov-int/build-log.txt
+            cov-int/scm.log
+            cov-int/configuration.xml
+          if-no-files-found: warn
