@@ -11,6 +11,7 @@ permissions:
   security-events: write
   pull-requests: write
 
+# Prevent overlapping runs for the same ref
 concurrency:
   group: coverity-${{ github.ref }}
   cancel-in-progress: false
@@ -21,22 +22,27 @@ env:
   COVERITY_STREAM:       ${{ vars.COVERITY_STREAM }}
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
-  # ---- Local Windows path to Coverity CLI ----
-  # Adjust if you're actually using Black Duck Desktop's bundled tools
-  # e.g.: C:\Users\TracyChrisinger\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.3.0\bin
+  # ---- Local Windows path to your Coverity CLI ----
+  # If you use the Black Duck–installed tools, set this to the exact bin path, e.g.:
+  # C:\Users\TracyChrisinger\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
   COVERITY_BIN_DIR:      C:\Coverity\bin
 
-  # Optional: fail fast for 32-bit shells
+  # Optional: fail fast if a 32-bit shell is used
   REQUIRE_64BIT_PWSH:    true
 
 jobs:
   coverity:
     name: Coverity Connect Scan (Windows)
-    runs-on: [self-hosted, windows]
+    runs-on:
+      - self-hosted
+      - windows
+      - x64
     timeout-minutes: 90
+
+    # Use 64-bit PowerShell Core by default for all run steps
     defaults:
       run:
-        shell: pwsh  # ensure PowerShell Core (64-bit) by default
+        shell: pwsh
 
     steps:
       # -----------------------------------------------------------
@@ -87,47 +93,41 @@ jobs:
       # -----------------------------------------------------------
       - name: Verify Coverity CLI presence & runnable
         run: |
-          function Test-Tool([string]$name, [string]$args = "--help") {
-            $cmd = Get-Command $name -ErrorAction SilentlyContinue
-            if (-not $cmd) { throw "Missing on PATH: $name" }
-            Write-Host ("{0}: {1}" -f $name, $cmd.Source)
+          function Invoke-Tool([string]$exe, [string[]]$argArray) {
+            $cmd = Get-Command $exe -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "Missing on PATH: $exe" }
+            Write-Host ("{0}: {1}" -f $exe, $cmd.Source)
 
-            $errFile = Join-Path $env:RUNNER_TEMP "$name.err.txt"
-            if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
+            $errFile = Join-Path $env:RUNNER_TEMP "$exe.err.txt"
+            if (Test-Path $errFile) { Remove-Item $errFile -Force -EA SilentlyContinue }
 
-            $p = Start-Process -FilePath $cmd.Source -ArgumentList $args -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
+            $p = Start-Process -FilePath $cmd.Source -ArgumentList $argArray -NoNewWindow -PassThru -Wait -RedirectStandardError $errFile
             if ($p.ExitCode -ne 0) {
               $stderr = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : "<no stderr>"
-              throw "$name $args failed with exit code $($p.ExitCode). STDERR:`n$stderr"
+              throw "$exe $($argArray -join ' ') failed with exit code $($p.ExitCode). STDERR:`n$stderr"
             }
           }
 
-          # Presence first
+          # Presence
           $missing = @()
           foreach ($t in 'cov-build','cov-analyze','cov-commit-defects') {
             if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { $missing += $t }
           }
           if ($missing) { throw "Missing Coverity tools on PATH: $($missing -join ', ')" }
 
-          # Runnable checks
-          Test-Tool 'cov-build' '--help'
-          Test-Tool 'cov-analyze' '--help'
+          # Prefer --version for cov-build/cov-analyze (stable exit code 0)
+          Invoke-Tool 'cov-build' @('--version')
+          Invoke-Tool 'cov-analyze' @('--version')
 
-          # cov-commit-defects sometimes returns 1 for --help on some versions; use --version-safe probe
-          # If your version supports --version, do that; otherwise call bare and tolerate exit code 2 with stderr
+          # cov-commit-defects: try --version, fall back to --help if needed
           try {
-            Test-Tool 'cov-commit-defects' '--version'
+            Invoke-Tool 'cov-commit-defects' @('--version')
           } catch {
-            Write-Warning "cov-commit-defects --version failed; attempting --help leniency"
-            $cmd = (Get-Command 'cov-commit-defects').Source
-            $p = Start-Process -FilePath $cmd -ArgumentList '--help' -NoNewWindow -PassThru -Wait -RedirectStandardError "$env:RUNNER_TEMP\cov-commit-defects.err.txt"
-            if ($p.ExitCode -ne 0) {
-              $stderr = Get-Content "$env:RUNNER_TEMP\cov-commit-defects.err.txt" -Raw
-              throw "cov-commit-defects not runnable. Exit=$($p.ExitCode). STDERR:`n$stderr"
-            }
+            Write-Warning "cov-commit-defects --version failed; trying --help"
+            Invoke-Tool 'cov-commit-defects' @('--help')
           }
 
-          # Versions (informational)
+          # (Informational) echo versions for the logs
           cov-build --version
           cov-analyze --version
 
@@ -147,7 +147,7 @@ jobs:
           # Print dotnet info for troubleshooting
           dotnet --info
 
-          # Use fs-capture for .NET
+          # Use fs-capture for .NET builds
           cov-build --dir cov-int --fs-capture-search . -- dotnet build --configuration Release
 
       # -----------------------------------------------------------
@@ -158,13 +158,14 @@ jobs:
           cov-analyze --dir cov-int --all --webapp-security
 
       # -----------------------------------------------------------
-      # COMMIT DEFECTS — USER/PASSWORD
+      # COMMIT DEFECTS — USER/PASSWORD AUTH
       # -----------------------------------------------------------
       - name: Commit defects (username/password)
         if: ${{ env.COVERITY_USER != '' && env.COVERITY_PASSWORD != '' }}
         run: |
           $args = ""
           if ("$env:COVERITY_PROJECT" -ne "") {
+            # careful quoting for a value with spaces
             $args = "--scm-project-name `"$env:COVERITY_PROJECT`""
           }
 
@@ -177,7 +178,7 @@ jobs:
             $args
 
       # -----------------------------------------------------------
-      # COMMIT DEFECTS — TOKEN
+      # COMMIT DEFECTS — TOKEN AUTH
       # -----------------------------------------------------------
       - name: Commit defects (token)
         if: ${{ env.COVERITY_AUTH_TOKEN != '' }}
