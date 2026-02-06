@@ -23,7 +23,7 @@ env:
   COVERITY_PROJECT:      ${{ vars.COVERITY_PROJECT }}
 
   # ---- Local Windows path to your Coverity CLI ----
-  # RECOMMENDED: point this to the Black Duck Desktop-installed tools if you use them, e.g.:
+  # If using Black Duck Desktop tools, set to its bin path, e.g.:
   # C:\Users\<User>\AppData\Roaming\BlackDuck\desktop\controller\installedtools\coverity-analysis\2025.12.0\bin
   COVERITY_BIN_DIR:      C:\Coverity\bin
 
@@ -93,7 +93,7 @@ jobs:
       - name: Sanity-check Coverity EXE headers
         run: |
           $paths = @(
-            Join-Path $env:COVERITY_BIN_DIR 'cov-build.exe'),
+            (Join-Path $env:COVERITY_BIN_DIR 'cov-build.exe'),
             (Join-Path $env:COVERITY_BIN_DIR 'cov-analyze.exe'),
             (Join-Path $env:COVERITY_BIN_DIR 'cov-commit-defects.exe')
           )
